@@ -29,9 +29,15 @@ variable "manage_cloudrun_vpc" {
   default     = true
 }
 
+variable "manage_kms" {
+  type        = bool
+  description = "Emit the CMEK service-agent grants (GCS agent, and — with manage_cloudsql_sn — the Cloud SQL agent) encrypt/decrypt on kms_key_id. MUST be a plan-known literal: it gates `count`, so it cannot be derived from kms_key_id (which is wired to module.kms.id and is unknown until apply on a first apply). The platform sets this true when the base project_setup creates a KMS key. Default true keeps backward-compatible behavior when unset."
+  default     = true
+}
+
 variable "kms_key_id" {
   type        = string
-  description = "Full crypto-key id (…/keyRings/<ring>/cryptoKeys/<key>) used for CMEK. When set, the GCS service agent is granted encrypt/decrypt on it so CMEK buckets can be created on a brand-new project. Leave empty to skip."
+  description = "Full crypto-key id (…/keyRings/<ring>/cryptoKeys/<key>) used for CMEK. Used only as the grant VALUE (never in count), so it may be an apply-time reference like module.kms.id. The GCS/SQL service agents are granted encrypt/decrypt on it so CMEK resources can be created on a brand-new project."
   default     = ""
 }
 

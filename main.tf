@@ -21,7 +21,10 @@ data "google_project" "service_project" {
 
 locals {
   svc_number = data.google_project.service_project.number
-  manage_kms = var.kms_key_id != "" ? 1 : 0
+  # Gate on the plan-known bool, NOT on kms_key_id: kms_key_id is wired to
+  # module.kms.id (unknown until apply on a first apply), and a count cannot
+  # depend on an apply-time value ("Invalid count argument").
+  manage_kms = var.manage_kms ? 1 : 0
 
   # Per-concern gates. The platform sets manage_* from the architecture (only the
   # services actually present), and grant_host_project_iam from whether the
