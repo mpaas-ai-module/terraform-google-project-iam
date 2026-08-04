@@ -93,11 +93,48 @@ resource "google_project_service_identity" "cloudsql" {
   service  = "sqladmin.googleapis.com"
 }
 
+// var.kms_key_id already forces Terraform to create the KMS key before this
+// grant is evaluated (it's wired to module.kms.id at the call site) — this is
+// not a missing depends_on. The gap is GCP's own eventual consistency: the KMS
+// API needs a moment after the key exists before GetIamPolicy reliably finds
+// it. The trigger on kms_key_id keeps this sleep correctly ordered after the
+// key is known while adding the propagation buffer the grant itself lacks.
+resource "time_sleep" "wait_kms_key" {
+  count           = local.manage_sql_kms
+  create_duration = var.kms_key_propagation_seconds
+  triggers = {
+    kms_key_id = var.kms_key_id
+  }
+}
+
 resource "google_kms_crypto_key_iam_member" "cloudsql_kms" {
   count         = local.manage_sql_kms
   crypto_key_id = var.kms_key_id
   role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
   member        = "serviceAccount:${google_project_service_identity.cloudsql[0].email}"
+
+  // gcs_kms is NOT an ordering nicety — it is required for correctness.
+  //
+  // This grant and gcs_kms write the SAME role on the SAME key. Every
+  // google_kms_crypto_key_iam_member is a read-modify-write of that key's whole
+  // IAM policy (GetIamPolicy -> append member -> SetIamPolicy), and with nothing
+  // between them Terraform runs both concurrently. The two RMW cycles interleave,
+  // the later SetIamPolicy is computed from a policy snapshot taken before the
+  // other member was added, and one binding is silently lost. The provider then
+  // re-reads the member it just wrote, cannot find it, and reports what looks
+  // like a provider defect:
+  //
+  //   Error: Provider produced inconsistent result after apply
+  //   ...google_kms_crypto_key_iam_member.cloudsql_kms[0]... produced an
+  //   unexpected new value: Root object was present, but now absent.
+  //
+  // Serializing the two writers is the fix. time_sleep.wait_kms_key does NOT
+  // achieve this: it is an independent timer keyed on kms_key_id, so both grants
+  // can still be in flight at once. Do not drop gcs_kms from this list.
+  depends_on = [
+    time_sleep.wait_kms_key,
+    google_kms_crypto_key_iam_member.gcs_kms,
+  ]
 }
 
 # ── Host-project grants (shared VPC) — gated ─────────────────────────────────

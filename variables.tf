@@ -47,6 +47,12 @@ variable "gcs_sa_propagation_seconds" {
   default     = "45s"
 }
 
+variable "kms_key_propagation_seconds" {
+  type        = string
+  description = "Delay between the KMS crypto key becoming known (module.kms.id resolves) and granting the Cloud SQL service agent encrypt/decrypt on it. The KMS API needs a moment after key creation before GetIamPolicy reliably finds it — without this, the grant can fail with 'Error retrieving IAM policy for KMS CryptoKey ... not found' even though Terraform correctly ordered key creation before the grant."
+  default     = "30s"
+}
+
 variable "iam_propagation_seconds" {
   type        = string
   description = "How long consumers (via depends_on = [module.project_iam]) wait after the service-agent grants are written, so cross-project IAM has time to propagate before the connector/private-IP/CMEK resource is created."
