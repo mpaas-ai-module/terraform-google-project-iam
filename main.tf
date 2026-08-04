@@ -35,8 +35,10 @@ locals {
 
   # Cloud SQL CMEK grant fires only when SQL is present AND a key is supplied.
   manage_sql_kms = (local.manage_sql == 1 && local.manage_kms == 1) ? 1 : 0
+  # BigQuery CMEK grant fires only when a CMEK dataset is present AND a key is supplied.
+  manage_bq_kms = (var.manage_bigquery_cmek && local.manage_kms == 1) ? 1 : 0
   # Any grant at all → emit a propagation barrier (see time_sleep below).
-  any_grant = (local.manage_sql + local.manage_kms + local.grant_host_sql + local.grant_host_run) > 0 ? 1 : 0
+  any_grant = (local.manage_sql + local.manage_kms + local.grant_host_sql + local.grant_host_run + local.manage_bq_kms) > 0 ? 1 : 0
 
   # Service-agent emails derived from the service project number.
   cloudrun_agent       = "serviceAccount:service-${local.svc_number}@serverless-robot-prod.iam.gserviceaccount.com"
@@ -137,6 +139,54 @@ resource "google_kms_crypto_key_iam_member" "cloudsql_kms" {
   ]
 }
 
+# ── BigQuery CMEK agent -> KMS encrypt/decrypt (consumer project) ─────────────
+# A dataset with default_encryption_configuration fails its first apply with
+#
+#   Error 400: Service account bq-<num>@bigquery-encryption.iam.gserviceaccount.com
+#   does not exist., badRequest
+#
+# The BigQuery *encryption* agent is NOT the generic BigQuery service agent
+# (service-<num>@gcp-sa-bigquery…), so google_project_service_identity cannot
+# create it — google_project_service_identity for bigquery.googleapis.com yields
+# the wrong principal. It is created lazily, by ASKING for it: the underlying
+# bigquery.projects.getServiceAccount call brings it into existence, which is
+# exactly what this data source issues. Same materialize-then-grant shape as the
+# GCS agent above; the dataset module used to interpolate the email from the
+# project number instead, which names an account that may not exist yet.
+#
+# Requires bigquery.googleapis.com to be enabled — serviceAPIByTemplate maps
+# "big-query" -> bigquery.googleapis.com, so project_setup has already done that.
+data "google_bigquery_default_service_account" "bq" {
+  count   = local.manage_bq_kms
+  project = var.project_id
+}
+
+resource "time_sleep" "wait_bq_sa" {
+  count           = local.manage_bq_kms
+  depends_on      = [data.google_bigquery_default_service_account.bq]
+  create_duration = var.bq_sa_propagation_seconds
+}
+
+resource "google_kms_crypto_key_iam_member" "bigquery_kms" {
+  count         = local.manage_bq_kms
+  crypto_key_id = var.kms_key_id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "serviceAccount:${data.google_bigquery_default_service_account.bq[0].email}"
+
+  // Third writer of the SAME role on the SAME key — see the long comment on
+  // cloudsql_kms. Every google_kms_crypto_key_iam_member is a read-modify-write
+  // of the key's whole IAM policy, so concurrent writers silently drop each
+  // other's member and the provider then reports "Provider produced inconsistent
+  // result after apply … Root object was present, but now absent". Chaining onto
+  // cloudsql_kms serializes all three. Do not parallelize this.
+  depends_on = [
+    time_sleep.wait_bq_sa,
+    time_sleep.wait_kms_key,
+    google_kms_crypto_key_iam_member.gcs_kms,
+    google_kms_crypto_key_iam_member.cloudsql_kms,
+  ]
+}
+
 # ── Host-project grants (shared VPC) — gated ─────────────────────────────────
 # Cloud Run with a host-project VPC connector: both the Cloud Run service agent
 # and the Serverless-VPC access agent need roles/vpcaccess.user on the host
@@ -189,5 +239,6 @@ resource "time_sleep" "wait_iam_propagation" {
     google_project_iam_member.sn_host_networkuser,
     google_kms_crypto_key_iam_member.gcs_kms,
     google_kms_crypto_key_iam_member.cloudsql_kms,
+    google_kms_crypto_key_iam_member.bigquery_kms,
   ]
 }

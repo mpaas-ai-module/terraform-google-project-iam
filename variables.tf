@@ -29,6 +29,18 @@ variable "manage_cloudrun_vpc" {
   default     = true
 }
 
+variable "manage_bigquery_cmek" {
+  type        = bool
+  description = "Emit the BigQuery encryption-agent grant: materialize bq-<project-number>@bigquery-encryption.iam.gserviceaccount.com (it is created lazily, only when GCP is asked for it) and give it encrypt/decrypt on kms_key_id. Without it a dataset with default_encryption_configuration fails its first apply with 'Service account bq-… does not exist'. Like manage_kms this gates a `count`, so it MUST be a plan-known literal. The platform sets it true when a big-query node is in the architecture. Default false: unlike the older flags this is a NEW concern, so defaulting it on would add an unexpected grant to every existing caller."
+  default     = false
+}
+
+variable "bq_sa_propagation_seconds" {
+  type        = string
+  description = "Delay between materializing the BigQuery encryption agent and granting it the KMS role — the same 'service account does not exist' race the GCS agent has, since the account is created by the read that precedes this."
+  default     = "45s"
+}
+
 variable "manage_kms" {
   type        = bool
   description = "Emit the CMEK service-agent grants (GCS agent, and — with manage_cloudsql_sn — the Cloud SQL agent) encrypt/decrypt on kms_key_id. MUST be a plan-known literal: it gates `count`, so it cannot be derived from kms_key_id (which is wired to module.kms.id and is unknown until apply on a first apply). The platform sets this true when the base project_setup creates a KMS key. Default true keeps backward-compatible behavior when unset."
